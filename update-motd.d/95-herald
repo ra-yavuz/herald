@@ -1,0 +1,7 @@
+#!/bin/sh
+# herald MOTD entry. Shipped non-executable; toggle on with:
+#   sudo herald motd on
+#
+# Runs at PAM login (SSH, console, display-manager). Reads the cached
+# quote so login is fast; the cache is refreshed by herald-refresh.timer.
+exec /usr/bin/herald render

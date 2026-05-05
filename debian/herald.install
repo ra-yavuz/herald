@@ -1,0 +1,8 @@
+usr/bin/herald
+usr/share/herald/quotes.json
+etc/profile.d/50-herald.sh
+etc/update-motd.d/95-herald
+lib/systemd/system/herald-refresh.service
+lib/systemd/system/herald-refresh.timer
+usr/share/doc/herald/README.md
+usr/share/doc/herald/LICENSE

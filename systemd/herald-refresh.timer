@@ -1,0 +1,16 @@
+[Unit]
+Description=herald: periodic quote refresh
+Documentation=https://github.com/ra-yavuz/herald
+
+[Timer]
+# Default cadence: every three hours. Override via 'herald set-refresh <hours>',
+# which writes /etc/systemd/system/herald-refresh.timer.d/override.conf.
+OnCalendar=*-*-* 00/3:00:00
+# Catch up after downtime (laptops sleep, machines reboot).
+Persistent=true
+# Spread load on the upstream quote API. 600s = 10 minutes randomization.
+RandomizedDelaySec=600
+Unit=herald-refresh.service
+
+[Install]
+WantedBy=timers.target

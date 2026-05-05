@@ -1,0 +1,17 @@
+*.deb
+*.buildinfo
+*.changes
+*.dsc
+*.tar.*
+debian/.debhelper/
+debian/files
+debian/herald/
+debian/herald.substvars
+debian/debhelper-build-stamp
+
+dist/
+build/
+
+*~
+*.swp
+.DS_Store

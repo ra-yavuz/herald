@@ -1,0 +1,15 @@
+herald (0.1.0-1) unstable; urgency=low
+
+  * Initial release.
+  * Two display surfaces: terminal greeting (/etc/profile.d) and login
+    MOTD (/etc/update-motd.d). Both off by default; toggle with
+    'herald terminal', 'herald motd', or 'herald all'.
+  * Quote source: zenquotes.io with 1.5s timeout, fallback to a local
+    pool of ~30 quotes shipped in /usr/share/herald/quotes.json.
+  * Cache at /var/cache/herald/today.json, refreshed by a systemd timer
+    (every three hours by default; configurable via 'herald set-refresh').
+  * Optional /etc/herald.prefix prepended above the quote.
+  * Suggests update-motd (not Recommends) so laptop users who only want
+    the terminal greeting don't pull in extra packages by default.
+
+ -- Ramazan Yavuz <yavuzramazan1994@gmail.com>  Tue, 05 May 2026 16:30:00 +0000

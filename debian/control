@@ -1,0 +1,38 @@
+Source: herald
+Section: utils
+Priority: optional
+Maintainer: Ramazan Yavuz <yavuzramazan1994@gmail.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://github.com/ra-yavuz/herald
+Vcs-Git: https://github.com/ra-yavuz/herald.git
+Vcs-Browser: https://github.com/ra-yavuz/herald
+Rules-Requires-Root: no
+
+Package: herald
+Architecture: all
+Depends: ${misc:Depends}, bash (>= 4.0), systemd, curl, python3, coreutils
+Suggests: update-motd
+Description: print a quote at the top of every new terminal and at login
+ herald is a small Linux daemon and CLI that prints a daily quote. It
+ supports two display surfaces:
+ .
+   * Terminal greeting at the top of every new interactive shell, via
+     /etc/profile.d/ plus a one-block opt-in in the user's ~/.bashrc.
+   * Login MOTD via /etc/update-motd.d/, shown at SSH/console/display-
+     manager login (requires the 'update-motd' package on Debian/Ubuntu).
+ .
+ Both are off by default; toggle with 'herald terminal' and 'herald motd'
+ (or 'herald all'). Quotes are fetched from zenquotes.io with a 1.5s
+ timeout, with a fallback to a bundled local pool of about 30 curated
+ quotes. The cache is refreshed by a systemd timer every three hours by
+ default; configurable via 'herald set-refresh <hours>'.
+ .
+ An optional /etc/herald.prefix file lets you prepend custom text above
+ the quote (useful for hostname banners, contact info, etc.).
+ .
+ DISCLAIMER: provided AS IS, no warranty. Quotes are fetched from a
+ third-party service. The author is not liable for the content of fetched
+ quotes, for events outside the author's control (third-party API outage,
+ downstream modifications, supply-chain compromise), or for any damage
+ caused by installing or running this software. See README for full text.

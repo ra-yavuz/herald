@@ -1,0 +1,38 @@
+#!/bin/sh
+# postinst for herald
+set -e
+
+CACHE_DIR=/var/cache/herald
+TIMER=herald-refresh.timer
+
+case "$1" in
+    configure)
+        # Cache dir
+        install -d -o root -g root -m 0755 "$CACHE_DIR"
+
+        # Wire up the systemd timer (and refresh the units in case the
+        # admin changed the override file via 'herald set-refresh').
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+            # Enable the timer (disabled state is honored if the user
+            # set hours=0; we still 'enable' but the override controls
+            # OnCalendar). On fresh install, also fire one refresh now
+            # so a quote is available immediately.
+            systemctl enable "$TIMER" || true
+            if [ -z "${2:-}" ]; then
+                systemctl start "$TIMER" || true
+                systemctl start herald-refresh.service || true
+            fi
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

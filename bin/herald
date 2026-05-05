@@ -1,0 +1,489 @@
+#!/usr/bin/env bash
+# herald: print a quote at the top of every new terminal and/or at login.
+#
+# A small CLI that toggles two display surfaces (terminal greeting via
+# /etc/profile.d + ~/.bashrc, and login MOTD via /etc/update-motd.d),
+# manages a refresh timer, and fetches today's quote from zenquotes.io
+# with a fallback to a bundled local pool. Cached at /var/cache/herald/.
+set -euo pipefail
+
+CACHE_DIR=/var/cache/herald
+CACHE_FILE=$CACHE_DIR/today.json
+LOCAL_POOL=/usr/share/herald/quotes.json
+PREFIX_FILE=/etc/herald.prefix
+CONF_FILE=/etc/herald.conf
+PROFILE_FILE=/etc/profile.d/50-herald.sh
+MOTD_FILE=/etc/update-motd.d/95-herald
+TIMER_UNIT=herald-refresh.timer
+
+# ~/.bashrc block markers
+# shellcheck disable=SC2016
+BASHRC_BEGIN_MARKER='# >>> herald greeting (managed by `herald terminal`) >>>'
+BASHRC_END_MARKER='# <<< herald greeting <<<'
+
+usage() {
+    cat <<EOF
+Usage: herald <command>
+
+Print today's quote, or manage where it appears and how often it refreshes.
+
+Commands:
+  (no args)          Print today's quote.
+  refresh            Fetch a new quote now (writes the cache, ignores timer).
+  terminal [on|off]  Toggle the greeting at the top of every new interactive
+                     shell. With no argument, toggle. With "status", report.
+  motd     [on|off]  Toggle the greeting at SSH/console/display-manager
+                     login (via /etc/update-motd.d/). Needs the
+                     'update-motd' package on Debian/Ubuntu.
+  all      [on|off]  Toggle BOTH terminal and motd at once.
+  set-prefix "TEXT"  Write TEXT to $PREFIX_FILE; it is shown above the
+                     quote. Use "" or "clear-prefix" to remove.
+  clear-prefix       Remove $PREFIX_FILE.
+  set-refresh <H>    Set the refresh cadence to every H hours (1..168).
+                     0 disables the timer (manual 'herald refresh' only).
+                     Default: 3 (every three hours).
+  status             Show terminal/motd/timer/refresh state.
+  render             Render the prefix + cached quote (used by hooks).
+
+Examples:
+  herald                        # print today's quote
+  herald refresh                # force a refresh now
+  sudo herald all on            # show greeting on every terminal AND at login
+  sudo herald set-refresh 24    # refresh once a day
+  sudo herald set-prefix "Welcome to tripolis."
+
+DISCLAIMER: Provided AS IS, no warranty. Quotes are fetched from a third-
+party service (zenquotes.io). The author is not liable for the content of
+fetched quotes, for events outside their control (third-party API outage,
+downstream modifications, supply-chain compromise), or for any damage
+caused by installing or running this software. See README for full text.
+EOF
+}
+
+require_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "Error: this command needs root. Try: sudo herald $*" >&2
+        exit 1
+    fi
+}
+
+# Parse a positive integer in 0..168.
+parse_hours() {
+    local h=$1
+    if ! [[ "$h" =~ ^[0-9]+$ ]] || [ "$h" -lt 0 ] || [ "$h" -gt 168 ]; then
+        echo "Error: hours must be an integer in 0..168 (0 = disable timer)." >&2
+        exit 1
+    fi
+    echo "$h"
+}
+
+# Read the configured refresh interval (hours) from the conf file, default 3.
+read_refresh_hours() {
+    if [ -r "$CONF_FILE" ]; then
+        local h
+        h=$(grep -E '^REFRESH_HOURS=' "$CONF_FILE" | tail -1 | cut -d= -f2- | tr -d ' "' || true)
+        if [[ "$h" =~ ^[0-9]+$ ]]; then
+            echo "$h"
+            return
+        fi
+    fi
+    echo 3
+}
+
+write_conf() {
+    local hours=$1
+    install -d -m 0755 "$(dirname "$CONF_FILE")"
+    cat > "$CONF_FILE" <<EOF
+# herald configuration. Edit via 'herald set-refresh' to keep the timer
+# unit in sync. Editing by hand also works but you must run
+# 'systemctl daemon-reload && systemctl restart $TIMER_UNIT' afterward.
+REFRESH_HOURS=$hours
+EOF
+    chmod 0644 "$CONF_FILE"
+}
+
+# Render the systemd timer's OnCalendar from REFRESH_HOURS. systemd has
+# no "every N hours" syntax for non-divisors of 24, so we fall back to a
+# minute-of-day list when N does not divide 24 evenly.
+render_oncalendar() {
+    local h=$1
+    if [ "$h" -le 0 ]; then
+        echo ""
+        return
+    fi
+    if [ $((24 % h)) -eq 0 ]; then
+        # Clean: "00, h, 2h, ..." every 24/h hours.
+        echo "*-*-* 00/${h}:00:00"
+    else
+        # Build an explicit list of hours from 0 stepping by h, capped at 24.
+        local hours_list="" hh=0
+        while [ "$hh" -lt 24 ]; do
+            if [ -z "$hours_list" ]; then hours_list="$hh"; else hours_list="$hours_list,$hh"; fi
+            hh=$((hh + h))
+        done
+        echo "*-*-* ${hours_list}:00:00"
+    fi
+}
+
+regenerate_timer_unit() {
+    local h=$1
+    local oncal
+    oncal=$(render_oncalendar "$h")
+    if [ -z "$oncal" ]; then
+        # Disabled: stop and disable the timer, leave service in place
+        # for manual 'systemctl start herald-refresh.service'.
+        systemctl stop    "$TIMER_UNIT" 2>/dev/null || true
+        systemctl disable "$TIMER_UNIT" 2>/dev/null || true
+        echo "Refresh timer disabled. Run 'sudo herald refresh' to refresh manually."
+        return
+    fi
+    # Drop a runtime override so we don't fight the package's shipped unit.
+    local dropdir=/etc/systemd/system/$TIMER_UNIT.d
+    install -d -m 0755 "$dropdir"
+    cat > "$dropdir/override.conf" <<EOF
+# Generated by 'herald set-refresh'. Do not edit by hand; rerun the
+# command instead. Editing here will be overwritten.
+[Timer]
+OnCalendar=
+OnCalendar=$oncal
+EOF
+    systemctl daemon-reload
+    systemctl enable --now "$TIMER_UNIT" 2>/dev/null || true
+    echo "Refresh timer set to: $oncal (every ${h} hours)."
+}
+
+# Fetch a fresh quote and cache it. Quote source: zenquotes.io, with
+# fallback to the bundled local pool if the request fails or times out.
+# Output schema (JSON object):
+#   { "text": "...", "author": "...", "fetched_at": "RFC3339", "source": "zenquotes" | "local" }
+do_refresh() {
+    install -d -m 0755 "$CACHE_DIR"
+    local payload="" tmp text author source
+    tmp=$(mktemp)
+    if curl --silent --max-time 1.5 --fail \
+        -H 'Accept: application/json' \
+        'https://zenquotes.io/api/random' -o "$tmp" 2>/dev/null; then
+        # Response is [{"q":"...","a":"...","h":"<html>"}]; extract first stanza.
+        text=$(python3 -c "import sys,json; d=json.load(open('$tmp')); print(d[0].get('q','').strip())" 2>/dev/null || echo "")
+        author=$(python3 -c "import sys,json; d=json.load(open('$tmp')); print(d[0].get('a','').strip())" 2>/dev/null || echo "")
+        source=zenquotes
+    fi
+    rm -f "$tmp"
+    if [ -z "${text:-}" ] || [ -z "${author:-}" ]; then
+        # Pick a random line from the local pool. Pool format is the same
+        # JSON object schema, one per line.
+        if [ -r "$LOCAL_POOL" ]; then
+            local line
+            line=$(shuf -n 1 "$LOCAL_POOL" 2>/dev/null || head -1 "$LOCAL_POOL")
+            text=$(echo "$line"   | python3 -c "import sys,json; print(json.load(sys.stdin).get('text',''))" 2>/dev/null || echo "")
+            author=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('author',''))" 2>/dev/null || echo "")
+            source=local
+        fi
+    fi
+    if [ -z "${text:-}" ]; then
+        # Hard fallback: a static line so the file is always valid JSON.
+        text="The unexamined life is not worth living."
+        author="Socrates"
+        source=builtin
+    fi
+    payload=$(python3 -c "
+import json, datetime
+print(json.dumps({
+    'text': '''$text''',
+    'author': '''$author''',
+    'fetched_at': datetime.datetime.utcnow().isoformat() + 'Z',
+    'source': '$source',
+}))
+" 2>/dev/null) || payload=$(printf '{"text":%q,"author":%q,"fetched_at":"unknown","source":"%s"}\n' "$text" "$author" "$source")
+
+    # Atomic write so readers never see a half-written file.
+    local tmp_out
+    tmp_out=$(mktemp "$CACHE_DIR/.tmp.XXXXXX")
+    printf '%s\n' "$payload" > "$tmp_out"
+    chmod 0644 "$tmp_out"
+    mv -f "$tmp_out" "$CACHE_FILE"
+    if [ -t 1 ]; then
+        echo "Refreshed (source: $source)."
+    fi
+}
+
+# Render the cached quote, with optional prefix prepended.
+cmd_render() {
+    if [ ! -r "$CACHE_FILE" ]; then
+        # No cache yet: try a refresh inline (cheap), fall back silent.
+        if [ "$(id -u)" -eq 0 ]; then
+            do_refresh
+        else
+            return 0
+        fi
+    fi
+    local text author
+    text=$(python3 -c "import json; d=json.load(open('$CACHE_FILE')); print(d.get('text',''))" 2>/dev/null || echo "")
+    author=$(python3 -c "import json; d=json.load(open('$CACHE_FILE')); print(d.get('author',''))" 2>/dev/null || echo "")
+    [ -z "$text" ] && return 0
+
+    if [ -r "$PREFIX_FILE" ]; then
+        # Strip a single trailing newline if present.
+        local prefix
+        prefix=$(cat "$PREFIX_FILE")
+        if [ -n "$prefix" ]; then
+            printf '%s\n' "$prefix"
+        fi
+    fi
+    if [ -n "$author" ]; then
+        printf '  "%s"\n    -- %s\n\n' "$text" "$author"
+    else
+        printf '  "%s"\n\n' "$text"
+    fi
+}
+
+# ----- terminal greeting -----
+
+bashrc_path() {
+    local who=${SUDO_USER:-${USER:-$(id -un)}}
+    local home
+    home=$(getent passwd "$who" | cut -d: -f6)
+    [ -n "$home" ] || { echo ""; return; }
+    echo "$home/.bashrc"
+}
+
+bashrc_block_present() {
+    local rc
+    rc=$(bashrc_path)
+    [ -n "$rc" ] && [ -f "$rc" ] && grep -qF "$BASHRC_BEGIN_MARKER" "$rc"
+}
+
+bashrc_block_add() {
+    local rc
+    rc=$(bashrc_path)
+    [ -n "$rc" ] || return 0
+    [ -f "$rc" ] || touch "$rc"
+    if bashrc_block_present; then
+        return 0
+    fi
+    {
+        echo ""
+        echo "$BASHRC_BEGIN_MARKER"
+        echo "# This block is managed by 'herald terminal'. Do not edit by hand."
+        echo "if [ -r $PROFILE_FILE ]; then"
+        echo "    . $PROFILE_FILE"
+        echo "fi"
+        echo "$BASHRC_END_MARKER"
+    } >> "$rc"
+    if [ "$(id -u)" -eq 0 ]; then
+        local who=${SUDO_USER:-}
+        if [ -n "$who" ] && [ "$who" != "root" ]; then
+            chown "$who":"$(id -gn "$who")" "$rc" 2>/dev/null || true
+        fi
+    fi
+}
+
+bashrc_block_remove() {
+    local rc
+    rc=$(bashrc_path)
+    [ -n "$rc" ] || return 0
+    [ -f "$rc" ] || return 0
+    bashrc_block_present || return 0
+    sed -i.bak \
+        -e "/^$(printf '%s' "$BASHRC_BEGIN_MARKER" | sed 's/[]\/$*.^[]/\\&/g')\$/,/^$(printf '%s' "$BASHRC_END_MARKER" | sed 's/[]\/$*.^[]/\\&/g')\$/d" \
+        "$rc"
+    rm -f "$rc.bak"
+}
+
+terminal_enabled() {
+    [ -x "$PROFILE_FILE" ]
+}
+
+cmd_terminal() {
+    local sub=${1:-toggle}
+    case "$sub" in
+        on|enable)
+            require_root terminal on
+            chmod +x "$PROFILE_FILE"
+            bashrc_block_add
+            echo "Terminal greeting enabled. Open a new terminal to see it."
+            ;;
+        off|disable)
+            require_root terminal off
+            chmod -x "$PROFILE_FILE"
+            bashrc_block_remove
+            echo "Terminal greeting disabled."
+            ;;
+        status)
+            if terminal_enabled; then
+                echo "Terminal greeting: enabled."
+                if ! bashrc_block_present; then
+                    echo "Note: ~/.bashrc does not have the source block; new terminals"
+                    echo "may not show it. Run 'herald terminal off' then 'on' to fix."
+                fi
+            else
+                echo "Terminal greeting: disabled."
+            fi
+            ;;
+        toggle|"")
+            require_root terminal
+            if terminal_enabled; then
+                chmod -x "$PROFILE_FILE"
+                bashrc_block_remove
+                echo "Terminal greeting disabled."
+            else
+                chmod +x "$PROFILE_FILE"
+                bashrc_block_add
+                echo "Terminal greeting enabled. Open a new terminal to see it."
+            fi
+            ;;
+        *)
+            echo "Usage: herald terminal [on|off|status|toggle]" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# ----- login MOTD -----
+
+motd_enabled() {
+    [ -x "$MOTD_FILE" ]
+}
+
+motd_warn_if_no_renderer() {
+    if [ -d /etc/pam.d ] && grep -rq 'pam_motd.*motd=/run/motd.dynamic' /etc/pam.d 2>/dev/null; then
+        if ! command -v update-motd >/dev/null 2>&1 && ! dpkg -s update-motd >/dev/null 2>&1; then
+            echo
+            echo "Note: PAM is configured to read /run/motd.dynamic, but the"
+            echo "'update-motd' package that generates it is not installed. The"
+            echo "MOTD entry is on disk but PAM has nothing to display."
+            echo "  sudo apt install update-motd"
+            echo "Then log in fresh (SSH, console, or after reboot)."
+        fi
+    fi
+}
+
+cmd_motd() {
+    local sub=${1:-toggle}
+    case "$sub" in
+        on|enable)
+            require_root motd on
+            chmod +x "$MOTD_FILE"
+            echo "MOTD entry enabled. It appears at the top of any new"
+            echo "login session (SSH login, console login, display-manager login)."
+            motd_warn_if_no_renderer
+            ;;
+        off|disable)
+            require_root motd off
+            chmod -x "$MOTD_FILE"
+            echo "MOTD entry disabled."
+            ;;
+        status)
+            if motd_enabled; then
+                echo "MOTD entry: enabled."
+                motd_warn_if_no_renderer
+            else
+                echo "MOTD entry: disabled."
+            fi
+            ;;
+        toggle|"")
+            require_root motd
+            if motd_enabled; then
+                chmod -x "$MOTD_FILE"
+                echo "MOTD entry disabled."
+            else
+                chmod +x "$MOTD_FILE"
+                echo "MOTD entry enabled."
+                motd_warn_if_no_renderer
+            fi
+            ;;
+        *)
+            echo "Usage: herald motd [on|off|status|toggle]" >&2
+            exit 1
+            ;;
+    esac
+}
+
+cmd_all() {
+    local sub=${1:-toggle}
+    case "$sub" in
+        on|enable)
+            cmd_terminal on
+            cmd_motd on
+            ;;
+        off|disable)
+            cmd_terminal off
+            cmd_motd off
+            ;;
+        *)
+            echo "Usage: herald all [on|off]" >&2
+            exit 1
+            ;;
+    esac
+}
+
+cmd_set_prefix() {
+    require_root set-prefix "$@"
+    local text="${1:-}"
+    if [ -z "$text" ]; then
+        rm -f "$PREFIX_FILE"
+        echo "Prefix removed."
+    else
+        printf '%s\n' "$text" > "$PREFIX_FILE"
+        chmod 0644 "$PREFIX_FILE"
+        echo "Prefix set."
+    fi
+}
+
+cmd_set_refresh() {
+    require_root set-refresh "$@"
+    local h
+    h=$(parse_hours "${1:-}")
+    write_conf "$h"
+    regenerate_timer_unit "$h"
+}
+
+cmd_status() {
+    local h
+    h=$(read_refresh_hours)
+    echo "Refresh:    every $h hours"
+    if [ "$h" -gt 0 ]; then
+        echo "Timer:      $(systemctl is-active "$TIMER_UNIT" 2>&1 | head -1)"
+        local next
+        next=$(systemctl list-timers --all --no-pager 2>/dev/null | grep -F "$TIMER_UNIT" | awk '{print $1, $2, $3, $4}' | head -1 || true)
+        [ -n "$next" ] && echo "Next:       $next"
+    else
+        echo "Timer:      disabled (manual refreshes only)"
+    fi
+    echo "Cache:      $CACHE_FILE"
+    if [ -r "$CACHE_FILE" ]; then
+        local fetched_at source
+        fetched_at=$(python3 -c "import json; print(json.load(open('$CACHE_FILE')).get('fetched_at',''))" 2>/dev/null || echo "?")
+        source=$(python3 -c "import json; print(json.load(open('$CACHE_FILE')).get('source',''))" 2>/dev/null || echo "?")
+        echo "  fetched:  $fetched_at"
+        echo "  source:   $source"
+    else
+        echo "  (no cache yet, run: sudo herald refresh)"
+    fi
+    if [ -r "$PREFIX_FILE" ]; then
+        echo "Prefix:     set ($PREFIX_FILE)"
+    else
+        echo "Prefix:     none"
+    fi
+    if terminal_enabled; then echo "Terminal:   enabled"; else echo "Terminal:   disabled"; fi
+    if motd_enabled;     then echo "MOTD:       enabled"; else echo "MOTD:       disabled"; fi
+}
+
+# ----- dispatch -----
+
+cmd=${1:-default}
+shift || true
+case "$cmd" in
+    default|"")        cmd_render ;;
+    refresh)           require_root refresh; do_refresh ;;
+    terminal)          cmd_terminal "${1:-}" ;;
+    motd)              cmd_motd     "${1:-}" ;;
+    all)               cmd_all      "${1:-}" ;;
+    set-prefix)        cmd_set_prefix "${1:-}" ;;
+    clear-prefix)      cmd_set_prefix "" ;;
+    set-refresh)       cmd_set_refresh "${1:-}" ;;
+    status)            cmd_status ;;
+    render)            cmd_render ;;
+    -h|--help|help)    usage ;;
+    *)                 usage; exit 1 ;;
+esac

@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>herald - Daily quote at the top of every terminal and at login</title>
+<meta name="description" content="herald: a small Linux daemon and CLI by Ramazan Yavuz that prints a daily quote at the top of every new terminal and at login. Cached, configurable refresh, local fallback pool.">
+<meta name="author" content="Ramazan Yavuz">
+<meta name="keywords" content="herald, linux quote of the day, terminal greeting, motd, update-motd, profile.d, zenquotes, daily quote shell, bash quote, ssh login banner">
+<meta name="robots" content="index,follow">
+<link rel="canonical" href="https://ra-yavuz.github.io/herald/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="herald - Daily quote at the top of every terminal and at login">
+<meta property="og:description" content="A small Linux daemon and CLI that prints a daily quote at the top of every new terminal and at login.">
+<meta property="og:url" content="https://ra-yavuz.github.io/herald/">
+<meta property="og:site_name" content="ra-yavuz">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="herald - Daily quote at every terminal and at login">
+<meta name="twitter:description" content="A small Linux daemon and CLI that prints a daily quote at the top of every new terminal and at login.">
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --muted: #5e5e5e;
+    --bg: #f4f1ec;
+    --card: #ffffff;
+    --line: #d8d4cc;
+    --code-bg: #ebe7e0;
+    --link: #0a4ca8;
+    --apt-bg: #eef2f8;
+    --warn-bg: #fff7d6;
+    --warn-fg: #5a4500;
+    --warn-line: #e8d36b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #ececec;
+      --muted: #9a9a9a;
+      --bg: #1c1d20;
+      --card: #25272b;
+      --line: #353941;
+      --code-bg: #14151a;
+      --link: #7cb0ff;
+      --apt-bg: #1f242d;
+      --warn-bg: #3a2e00;
+      --warn-fg: #f6e2a4;
+      --warn-line: #6a5500;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--fg); background: var(--bg);
+    line-height: 1.55;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 24px 96px; }
+  .crumb { font-size: 0.86rem; color: var(--muted); margin: 0 0 18px; }
+  h1 { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.7rem; margin: 0 0 6px; }
+  p.tag { color: var(--muted); margin: 0 0 18px; font-size: 1rem; max-width: 60ch; }
+  h2 { font-size: 1rem; margin: 36px 0 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  a { color: var(--link); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
+  pre { background: var(--code-bg); padding: 12px 14px; border-radius: 6px; border: 1px solid var(--line); overflow-x: auto; font-size: 0.86rem; line-height: 1.55; margin: 0; }
+  pre code { background: transparent; padding: 0; }
+  .links-row a { margin-right: 14px; font-size: 0.95rem; }
+  .apt-section { background: var(--apt-bg); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; }
+  .apt-section h2 { margin-top: 0; }
+  .warn { background: var(--warn-bg); color: var(--warn-fg); border-left: 4px solid var(--warn-line); padding: 12px 16px; border-radius: 4px; font-size: 0.9rem; margin: 12px 0 0; }
+  footer { margin-top: 56px; color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--line); padding-top: 14px; }
+</style>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "herald",
+  "applicationCategory": "UtilityApplication",
+  "operatingSystem": "Linux",
+  "description": "A small Linux daemon and CLI that prints a daily quote at the top of every new terminal and at login. Cached quote refreshed on a configurable timer. Local fallback pool. Optional user prefix.",
+  "url": "https://ra-yavuz.github.io/herald/",
+  "downloadUrl": "https://github.com/ra-yavuz/herald/releases",
+  "softwareVersion": "0.1.0",
+  "license": "https://opensource.org/licenses/MIT",
+  "author": { "@type": "Person", "name": "Ramazan Yavuz", "url": "https://ra-yavuz.github.io/" },
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+</head>
+<body>
+<main>
+  <p class="crumb">
+    <a href="https://ra-yavuz.github.io/">ra-yavuz</a> &rsaquo; herald
+  </p>
+
+  <h1>herald</h1>
+  <p class="tag">
+    A small Linux daemon and CLI that prints a daily quote at the top of every new
+    terminal and at login. Cached, configurable refresh, local fallback pool.
+  </p>
+
+  <div class="links-row">
+    <a href="https://github.com/ra-yavuz/herald">source</a>
+    <a href="https://github.com/ra-yavuz/herald/releases">releases</a>
+    <a href="#install">install</a>
+    <a href="https://github.com/ra-yavuz/herald/issues">issues</a>
+  </div>
+
+  <h2 id="install">Quick install (Debian / Ubuntu)</h2>
+  <section class="apt-section">
+    <p>One command. Adds the signed apt repository, installs the package.</p>
+    <pre><code>curl -fsSL https://raw.githubusercontent.com/ra-yavuz/herald/main/scripts/get.sh | sudo bash</code></pre>
+    <p style="color: var(--muted); font-size: 0.92rem; margin-bottom: 0;">
+      Future upgrades: <code>sudo apt upgrade</code>. Full removal:
+      <code>sudo apt purge herald</code>.
+    </p>
+  </section>
+
+  <h2>What it does</h2>
+  <p>
+    Two display surfaces, both off by default:
+  </p>
+  <ul>
+    <li>
+      <strong>Terminal greeting:</strong> every new interactive shell prints
+      today's quote. Hooked into <code>/etc/profile.d/</code> and a marker
+      block in the invoking user's <code>~/.bashrc</code> (since
+      <code>/etc/bash.bashrc</code> on Ubuntu does not source profile.d).
+    </li>
+    <li>
+      <strong>Login MOTD:</strong> SSH, console, or display-manager login
+      shows the quote in the banner. Hooked into
+      <code>/etc/update-motd.d/</code> (requires the
+      <code>update-motd</code> package on Debian/Ubuntu).
+    </li>
+  </ul>
+  <p>Toggle independently:</p>
+  <pre><code>sudo herald terminal on        # eye candy: every new terminal
+sudo herald motd on            # login banner: SSH / console / DM
+sudo herald all on             # both
+sudo herald all off            # neither
+herald status                  # what's enabled</code></pre>
+
+  <h2>Quote source and refresh cadence</h2>
+  <p>
+    Online: <a href="https://zenquotes.io">zenquotes.io</a>, 1.5s timeout
+    per refresh. Fallback: a bundled local pool of ~30 curated quotes
+    (<code>/usr/share/herald/quotes.json</code>). The tool works offline.
+  </p>
+  <p>
+    Refresh cadence is configurable in hours, default every 3 hours:
+  </p>
+  <pre><code>sudo herald set-refresh 24     # once a day
+sudo herald set-refresh 168    # once a week
+sudo herald set-refresh 1      # hourly
+sudo herald set-refresh 0      # disable timer (manual only)
+sudo herald refresh            # fetch right now</code></pre>
+  <p>
+    Implementation: a systemd timer
+    (<code>herald-refresh.timer</code>) writes a cached JSON object at
+    <code>/var/cache/herald/today.json</code>. Both display surfaces
+    read from the cache, so login/shell startup is fast.
+  </p>
+
+  <h2>Optional prefix</h2>
+  <pre><code>sudo herald set-prefix "Welcome to tripolis. Coffee, then code."
+sudo herald clear-prefix</code></pre>
+  <p>
+    Stored at <code>/etc/herald.prefix</code>. Printed verbatim above
+    the quote.
+  </p>
+
+  <h2>Sample output</h2>
+  <pre><code>$ herald
+  "Premature optimization is the root of all evil."
+    -- Donald Knuth</code></pre>
+
+  <h2>Plays nicely with other ra-yavuz tools</h2>
+  <p>
+    herald is fully independent. It does not know about, depend on, or
+    modify any other tool. If you have <code>inhibit-charge</code>
+    installed with its terminal greeting enabled, both lines appear in
+    every new terminal: battery state above, herald quote below. They
+    share <code>/etc/profile.d/</code> but each snippet is independent.
+  </p>
+
+  <h2>Disclaimer / no warranty</h2>
+  <div class="warn">
+    Provided <strong>as is, without warranty of any kind</strong>.
+    Quotes are fetched from a third-party service
+    (<a href="https://zenquotes.io">zenquotes.io</a>); the author does
+    not curate or control their content. The author is not liable for
+    the content of fetched quotes, for events outside their control
+    (third-party API outage, supply-chain compromise, downstream
+    modifications), or for any damage caused by installing or running
+    this software. Disable online fetching with
+    <code>sudo herald set-refresh 0</code> if you prefer to use only
+    the bundled local pool. Full text:
+    <a href="https://github.com/ra-yavuz/herald#disclaimer--no-warranty">repo README</a>,
+    license: MIT.
+  </div>
+
+  <footer>
+    <p>
+      Author: <a href="https://ra-yavuz.github.io/">Ramazan Yavuz</a>.
+      Source: <a href="https://github.com/ra-yavuz/herald">github.com/ra-yavuz/herald</a>.
+      Apt repository: <a href="https://ra-yavuz.github.io/apt/">ra-yavuz.github.io/apt</a>.
+    </p>
+  </footer>
+</main>
+</body>
+</html>
