@@ -20,6 +20,10 @@ Both forms add the [signed apt repository](https://ra-yavuz.github.io/apt/) (if 
 
 If you already have the `ra-yavuz` apt repo, all you need is `sudo apt update && sudo apt install herald`. The `sudo apt update` step is required: without it apt will not see new packages or new versions.
 
+## Platform support
+
+Tested on **Ubuntu (Linux only)**. Should also work on **WSL2** Ubuntu/Debian distros (it is a Linux distro). Not supported on **macOS**: herald hooks into `/etc/profile.d/`, `update-motd.d`, and a systemd timer, none of which apply on Darwin. If you want a quote at terminal launch on macOS, the from-source install would not give you the auto-refresh timer, and the greeting would need to be wired into your shell rc directly.
+
 > ## Disclaimer / no warranty
 >
 > herald is provided **as is, without warranty of any kind**, express or implied, including but not limited to merchantability, fitness for a particular purpose, and noninfringement. By installing or running this software you accept that:

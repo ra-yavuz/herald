@@ -163,6 +163,15 @@ sudo apt install herald</code></pre>
     </details>
   </section>
 
+  <h2>Platform support</h2>
+  <p>
+    Tested on <strong>Ubuntu (Linux only)</strong>. Should also work on
+    <strong>WSL2</strong> Ubuntu / Debian distros, since those are Linux.
+    <strong>macOS is not supported</strong>: herald hooks into
+    <code>/etc/profile.d/</code>, <code>update-motd.d/</code>, and a systemd
+    timer, none of which apply on Darwin.
+  </p>
+
   <h2>What it does</h2>
   <p>
     Two display surfaces, both off by default:
