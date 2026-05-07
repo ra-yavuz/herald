@@ -4,11 +4,21 @@
 
 ## Quick install (Debian / Ubuntu)
 
+One line. Sets up the signed `ra-yavuz` apt repo if not already added, refreshes the package index, and installs herald. Idempotent, safe to re-run:
+
+```bash
+sudo bash -c 'set -e; install -m 0755 -d /etc/apt/keyrings && curl -fsSL https://ra-yavuz.github.io/apt/pubkey.gpg -o /etc/apt/keyrings/ra-yavuz.gpg && echo "deb [signed-by=/etc/apt/keyrings/ra-yavuz.gpg] https://ra-yavuz.github.io/apt stable main" > /etc/apt/sources.list.d/ra-yavuz.list && apt update && apt install -y herald'
+```
+
+Or via the bundled installer script (equivalent, with prerequisite checks and a friendlier output summary):
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ra-yavuz/herald/main/scripts/get.sh | sudo bash
 ```
 
-Adds the [signed apt repository](https://ra-yavuz.github.io/apt/), installs the package. Future upgrades: `sudo apt upgrade`. Full removal: `sudo apt purge herald`.
+Both forms add the [signed apt repository](https://ra-yavuz.github.io/apt/) (if not already added), run `apt update`, and install the package. Future upgrades: `sudo apt update && sudo apt upgrade`. Full removal: `sudo apt purge herald`.
+
+If you already have the `ra-yavuz` apt repo, all you need is `sudo apt update && sudo apt install herald`. The `sudo apt update` step is required: without it apt will not see new packages or new versions.
 
 > ## Disclaimer / no warranty
 >
@@ -99,7 +109,22 @@ Welcome to tripolis. Coffee, then code.
 
 ### Debian / Ubuntu via apt repo (recommended)
 
-See the one-liner at the top.
+See the one-liner at the top. Step by step (manual repo setup):
+
+```bash
+# 1. Trust the signing key
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://ra-yavuz.github.io/apt/pubkey.gpg \
+  | sudo tee /etc/apt/keyrings/ra-yavuz.gpg > /dev/null
+
+# 2. Add the apt source
+echo "deb [signed-by=/etc/apt/keyrings/ra-yavuz.gpg] https://ra-yavuz.github.io/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/ra-yavuz.list
+
+# 3. Refresh the package index, then install
+sudo apt update
+sudo apt install herald
+```
 
 ### Debian / Ubuntu single .deb
 
