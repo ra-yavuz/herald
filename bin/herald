@@ -42,7 +42,12 @@ Commands:
   set-refresh <H>    Set the refresh cadence to every H hours (1..168).
                      0 disables the timer (manual 'herald refresh' only).
                      Default: 3 (every three hours).
-  status             Show terminal/motd/timer/refresh state.
+  set-url <URL>      Fetch quotes from a custom JSON endpoint instead of
+                     zenquotes.io. The endpoint must return a JSON array of
+                     objects with "text" and "author" fields. A random item
+                     is picked on each refresh.
+  clear-url          Remove the custom URL; revert to zenquotes.io.
+  status             Show terminal/motd/timer/refresh/url state.
   render             Render the prefix + cached quote (used by hooks).
 
 Examples:
@@ -51,6 +56,8 @@ Examples:
   sudo herald all on            # show greeting on every terminal AND at login
   sudo herald set-refresh 24    # refresh once a day
   sudo herald set-prefix "Welcome to tripolis."
+  sudo herald set-url https://static.adamiskandar.com/data/v1/quotes.json
+  sudo herald clear-url         # revert to zenquotes.io
 
 DISCLAIMER: Provided AS IS, no warranty. Quotes are fetched from a third-
 party service (zenquotes.io). The author is not liable for the content of
@@ -549,6 +556,13 @@ cmd_status() {
         echo "  source:   $source"
     else
         echo "  (no cache yet, run: sudo herald refresh)"
+    fi
+    local custom_url
+    custom_url=$(read_custom_url)
+    if [ -n "$custom_url" ]; then
+        echo "Quote URL:  $custom_url (custom)"
+    else
+        echo "Quote URL:  https://zenquotes.io/api/random (default)"
     fi
     if [ -r "$PREFIX_FILE" ]; then
         echo "Prefix:     set ($PREFIX_FILE)"
