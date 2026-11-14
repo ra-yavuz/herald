@@ -470,6 +470,28 @@ cmd_set_refresh() {
     regenerate_timer_unit "$h"
 }
 
+cmd_set_url() {
+    require_root set-url "$@"
+    local url="${1:-}"
+    if [ -z "$url" ]; then
+        echo "Error: provide a URL, or run 'herald clear-url' to remove it." >&2
+        exit 1
+    fi
+    if [[ ! "$url" =~ ^https?:// ]]; then
+        echo "Error: URL must start with http:// or https://" >&2
+        exit 1
+    fi
+    write_conf_url "$url"
+    echo "Custom quote URL set: $url"
+    echo "Run 'sudo herald refresh' to fetch a quote from it now."
+}
+
+cmd_clear_url() {
+    require_root clear-url "$@"
+    write_conf_url ""
+    echo "Custom quote URL cleared. Will fall back to zenquotes.io."
+}
+
 cmd_status() {
     local h
     h=$(read_refresh_hours)
@@ -514,6 +536,8 @@ case "$cmd" in
     set-prefix)        cmd_set_prefix "${1:-}" ;;
     clear-prefix)      cmd_set_prefix "" ;;
     set-refresh)       cmd_set_refresh "${1:-}" ;;
+    set-url)           cmd_set_url "${1:-}" ;;
+    clear-url)         cmd_clear_url ;;
     status)            cmd_status ;;
     render)            cmd_render ;;
     -h|--help|help)    usage ;;
