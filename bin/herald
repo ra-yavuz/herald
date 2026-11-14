@@ -184,21 +184,57 @@ EOF
     echo "Refresh timer set to: $oncal (every ${h} hours)."
 }
 
-# Fetch a fresh quote and cache it. Quote source: zenquotes.io, with
-# fallback to the bundled local pool if the request fails or times out.
+# Fetch a fresh quote and cache it.
+# Source priority: custom URL (if set) -> zenquotes.io -> local pool -> builtin.
+# Custom endpoint must return a JSON array of objects with "text" and "author"
+# fields, e.g. [{"text":"...","author":"..."}]. Extra fields (e.g. "id") are
+# silently ignored. A random item is picked from the array on each refresh.
 # Output schema (JSON object):
-#   { "text": "...", "author": "...", "fetched_at": "RFC3339", "source": "zenquotes" | "local" }
+#   { "text": "...", "author": "...", "fetched_at": "RFC3339", "source": "custom" | "zenquotes" | "local" }
 do_refresh() {
     install -d -m 0755 "$CACHE_DIR"
     local payload="" tmp text author source
     tmp=$(mktemp)
-    if curl --silent --max-time 1.5 --fail \
-        -H 'Accept: application/json' \
-        'https://zenquotes.io/api/random' -o "$tmp" 2>/dev/null; then
-        # Response is [{"q":"...","a":"...","h":"<html>"}]; extract first stanza.
-        text=$(python3 -c "import sys,json; d=json.load(open('$tmp')); print(d[0].get('q','').strip())" 2>/dev/null || echo "")
-        author=$(python3 -c "import sys,json; d=json.load(open('$tmp')); print(d[0].get('a','').strip())" 2>/dev/null || echo "")
-        source=zenquotes
+
+    # --- 1. Custom URL (highest priority) ---
+    local custom_url
+    custom_url=$(read_custom_url)
+    if [ -n "$custom_url" ]; then
+        if curl --silent --max-time 5 --fail \
+            -H 'Accept: application/json' \
+            "$custom_url" -o "$tmp" 2>/dev/null; then
+            # Expect a JSON array; pick one random element atomically,
+            # then emit text and author on separate lines for read to split.
+            local picked
+            picked=$(python3 -c "
+import json, random, sys
+data = json.load(open('$tmp'))
+if isinstance(data, list) and data:
+    item = random.choice(data)
+    print(item.get('text','').strip())
+    print(item.get('author','').strip())
+" 2>/dev/null || true)
+            text=$(echo "$picked" | sed -n '1p')
+            author=$(echo "$picked" | sed -n '2p')
+            [ -n "$text" ] && source=custom
+        fi
+        if [ -z "${text:-}" ]; then
+            echo "Warning: custom URL fetch failed, falling back to zenquotes.io." >&2
+        fi
+    fi
+    rm -f "$tmp"
+    tmp=$(mktemp)
+
+    # --- 2. zenquotes.io (fallback when no custom URL or custom fetch failed) ---
+    if [ -z "${text:-}" ]; then
+        if curl --silent --max-time 1.5 --fail \
+            -H 'Accept: application/json' \
+            'https://zenquotes.io/api/random' -o "$tmp" 2>/dev/null; then
+            # Response is [{"q":"...","a":"...","h":"<html>"}]; extract first stanza.
+            text=$(python3 -c "import sys,json; d=json.load(open('$tmp')); print(d[0].get('q','').strip())" 2>/dev/null || echo "")
+            author=$(python3 -c "import sys,json; d=json.load(open('$tmp')); print(d[0].get('a','').strip())" 2>/dev/null || echo "")
+            source=zenquotes
+        fi
     fi
     rm -f "$tmp"
     if [ -z "${text:-}" ] || [ -z "${author:-}" ]; then
