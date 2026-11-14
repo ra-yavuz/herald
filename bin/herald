@@ -90,15 +90,47 @@ read_refresh_hours() {
     echo 3
 }
 
+# Read the custom quote endpoint URL from the conf file, empty if not set.
+read_custom_url() {
+    if [ -r "$CONF_FILE" ]; then
+        local url
+        url=$(grep -E '^CUSTOM_URL=' "$CONF_FILE" | tail -1 | cut -d= -f2- | tr -d '"' || true)
+        echo "$url"
+    fi
+}
+
 write_conf() {
     local hours=$1
+    # Preserve CUSTOM_URL if already set so this call doesn't wipe it.
+    local existing_url
+    existing_url=$(read_custom_url)
     install -d -m 0755 "$(dirname "$CONF_FILE")"
-    cat > "$CONF_FILE" <<EOF
-# herald configuration. Edit via 'herald set-refresh' to keep the timer
-# unit in sync. Editing by hand also works but you must run
-# 'systemctl daemon-reload && systemctl restart $TIMER_UNIT' afterward.
-REFRESH_HOURS=$hours
-EOF
+    {
+        echo "# herald configuration. Edit via 'herald set-refresh' / 'herald set-url'"
+        echo "# to keep settings in sync. Editing by hand also works but you must run"
+        echo "# 'systemctl daemon-reload && systemctl restart $TIMER_UNIT' afterward."
+        echo "REFRESH_HOURS=$hours"
+        if [ -n "$existing_url" ]; then
+            echo "CUSTOM_URL=$existing_url"
+        fi
+    } > "$CONF_FILE"
+    chmod 0644 "$CONF_FILE"
+}
+
+write_conf_url() {
+    local url=$1
+    local hours
+    hours=$(read_refresh_hours)
+    install -d -m 0755 "$(dirname "$CONF_FILE")"
+    {
+        echo "# herald configuration. Edit via 'herald set-refresh' / 'herald set-url'"
+        echo "# to keep settings in sync. Editing by hand also works but you must run"
+        echo "# 'systemctl daemon-reload && systemctl restart $TIMER_UNIT' afterward."
+        echo "REFRESH_HOURS=$hours"
+        if [ -n "$url" ]; then
+            echo "CUSTOM_URL=$url"
+        fi
+    } > "$CONF_FILE"
     chmod 0644 "$CONF_FILE"
 }
 
