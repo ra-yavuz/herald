@@ -530,7 +530,7 @@ cmd_set_url() {
 }
 
 cmd_clear_url() {
-    require_root clear-url "$@"
+    require_root clear-url
     write_conf_url ""
     echo "Custom quote URL cleared. Will fall back to zenquotes.io."
 }
