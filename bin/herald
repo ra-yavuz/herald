@@ -213,14 +213,16 @@ do_refresh() {
             # Expect a JSON array; pick one random element atomically,
             # then emit text and author on separate lines for read to split.
             local picked
-            picked=$(python3 -c "
+            picked=$(python3 - "$tmp" <<'PY'
 import json, random, sys
-data = json.load(open('$tmp'))
+with open(sys.argv[1], encoding='utf-8') as f:
+    data = json.load(f)
 if isinstance(data, list) and data:
     item = random.choice(data)
     print(item.get('text','').strip())
     print(item.get('author','').strip())
-" 2>/dev/null || true)
+PY
+            2>/dev/null || true)
             text=$(echo "$picked" | sed -n '1p')
             author=$(echo "$picked" | sed -n '2p')
             [ -n "$text" ] && source=custom
@@ -238,8 +240,20 @@ if isinstance(data, list) and data:
             -H 'Accept: application/json' \
             'https://zenquotes.io/api/random' -o "$tmp" 2>/dev/null; then
             # Response is [{"q":"...","a":"...","h":"<html>"}]; extract first stanza.
-            text=$(python3 -c "import sys,json; d=json.load(open('$tmp')); print(d[0].get('q','').strip())" 2>/dev/null || echo "")
-            author=$(python3 -c "import sys,json; d=json.load(open('$tmp')); print(d[0].get('a','').strip())" 2>/dev/null || echo "")
+            text=$(python3 - "$tmp" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as f:
+    data = json.load(f)
+print(data[0].get('q', '').strip())
+PY
+            2>/dev/null || echo "")
+            author=$(python3 - "$tmp" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as f:
+    data = json.load(f)
+print(data[0].get('a', '').strip())
+PY
+            2>/dev/null || echo "")
             source=zenquotes
         fi
     fi
@@ -261,15 +275,18 @@ if isinstance(data, list) and data:
         author="Socrates"
         source=builtin
     fi
-    payload=$(python3 -c "
-import json, datetime
+    payload=$(python3 -c '
+import datetime, json, sys
 print(json.dumps({
-    'text': '''$text''',
-    'author': '''$author''',
-    'fetched_at': datetime.datetime.utcnow().isoformat() + 'Z',
-    'source': '$source',
+    "text": sys.argv[1],
+    "author": sys.argv[2],
+    "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+    "source": sys.argv[3],
 }))
-" 2>/dev/null) || payload=$(printf '{"text":%q,"author":%q,"fetched_at":"unknown","source":"%s"}\n' "$text" "$author" "$source")
+' "$text" "$author" "$source" 2>/dev/null) || payload=$(printf '{"text":%s,"author":%s,"fetched_at":"unknown","source":%s}\n' \
+        "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$text")" \
+        "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$author")" \
+        "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$source")")
 
     # Atomic write so readers never see a half-written file.
     local tmp_out
@@ -293,8 +310,8 @@ cmd_render() {
         fi
     fi
     local text author
-    text=$(python3 -c "import json; d=json.load(open('$CACHE_FILE')); print(d.get('text',''))" 2>/dev/null || echo "")
-    author=$(python3 -c "import json; d=json.load(open('$CACHE_FILE')); print(d.get('author',''))" 2>/dev/null || echo "")
+    text=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("text", ""))' "$CACHE_FILE" 2>/dev/null || echo "")
+    author=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("author", ""))' "$CACHE_FILE" 2>/dev/null || echo "")
     [ -z "$text" ] && return 0
 
     if [ -r "$PREFIX_FILE" ]; then
@@ -550,8 +567,8 @@ cmd_status() {
     echo "Cache:      $CACHE_FILE"
     if [ -r "$CACHE_FILE" ]; then
         local fetched_at source
-        fetched_at=$(python3 -c "import json; print(json.load(open('$CACHE_FILE')).get('fetched_at',''))" 2>/dev/null || echo "?")
-        source=$(python3 -c "import json; print(json.load(open('$CACHE_FILE')).get('source',''))" 2>/dev/null || echo "?")
+        fetched_at=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("fetched_at", ""))' "$CACHE_FILE" 2>/dev/null || echo "?")
+        source=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("source", ""))' "$CACHE_FILE" 2>/dev/null || echo "?")
         echo "  fetched:  $fetched_at"
         echo "  source:   $source"
     else
