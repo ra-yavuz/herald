@@ -42,7 +42,12 @@ Commands:
   set-refresh <H>    Set the refresh cadence to every H hours (1..168).
                      0 disables the timer (manual 'herald refresh' only).
                      Default: 3 (every three hours).
-  status             Show terminal/motd/timer/refresh state.
+  set-url <URL>      Fetch quotes from a custom JSON endpoint instead of
+                     zenquotes.io. The endpoint must return a JSON array of
+                     objects with "text" and "author" fields. A random item
+                     is picked on each refresh.
+  clear-url          Remove the custom URL; revert to zenquotes.io.
+  status             Show terminal/motd/timer/refresh/url state.
   render             Render the prefix + cached quote (used by hooks).
 
 Examples:
@@ -51,6 +56,8 @@ Examples:
   sudo herald all on            # show greeting on every terminal AND at login
   sudo herald set-refresh 24    # refresh once a day
   sudo herald set-prefix "Welcome to tripolis."
+  sudo herald set-url https://static.adamiskandar.com/data/v1/quotes.json
+  sudo herald clear-url         # revert to zenquotes.io
 
 DISCLAIMER: Provided AS IS, no warranty. Quotes are fetched from a third-
 party service (zenquotes.io). The author is not liable for the content of
@@ -90,15 +97,47 @@ read_refresh_hours() {
     echo 3
 }
 
+# Read the custom quote endpoint URL from the conf file, empty if not set.
+read_custom_url() {
+    if [ -r "$CONF_FILE" ]; then
+        local url
+        url=$(grep -E '^CUSTOM_URL=' "$CONF_FILE" | tail -1 | cut -d= -f2- | tr -d '"' || true)
+        echo "$url"
+    fi
+}
+
 write_conf() {
     local hours=$1
+    # Preserve CUSTOM_URL if already set so this call doesn't wipe it.
+    local existing_url
+    existing_url=$(read_custom_url)
     install -d -m 0755 "$(dirname "$CONF_FILE")"
-    cat > "$CONF_FILE" <<EOF
-# herald configuration. Edit via 'herald set-refresh' to keep the timer
-# unit in sync. Editing by hand also works but you must run
-# 'systemctl daemon-reload && systemctl restart $TIMER_UNIT' afterward.
-REFRESH_HOURS=$hours
-EOF
+    {
+        echo "# herald configuration. Edit via 'herald set-refresh' / 'herald set-url'"
+        echo "# to keep settings in sync. Editing by hand also works but you must run"
+        echo "# 'systemctl daemon-reload && systemctl restart $TIMER_UNIT' afterward."
+        echo "REFRESH_HOURS=$hours"
+        if [ -n "$existing_url" ]; then
+            echo "CUSTOM_URL=$existing_url"
+        fi
+    } > "$CONF_FILE"
+    chmod 0644 "$CONF_FILE"
+}
+
+write_conf_url() {
+    local url=$1
+    local hours
+    hours=$(read_refresh_hours)
+    install -d -m 0755 "$(dirname "$CONF_FILE")"
+    {
+        echo "# herald configuration. Edit via 'herald set-refresh' / 'herald set-url'"
+        echo "# to keep settings in sync. Editing by hand also works but you must run"
+        echo "# 'systemctl daemon-reload && systemctl restart $TIMER_UNIT' afterward."
+        echo "REFRESH_HOURS=$hours"
+        if [ -n "$url" ]; then
+            echo "CUSTOM_URL=$url"
+        fi
+    } > "$CONF_FILE"
     chmod 0644 "$CONF_FILE"
 }
 
@@ -152,21 +191,71 @@ EOF
     echo "Refresh timer set to: $oncal (every ${h} hours)."
 }
 
-# Fetch a fresh quote and cache it. Quote source: zenquotes.io, with
-# fallback to the bundled local pool if the request fails or times out.
+# Fetch a fresh quote and cache it.
+# Source priority: custom URL (if set) -> zenquotes.io -> local pool -> builtin.
+# Custom endpoint must return a JSON array of objects with "text" and "author"
+# fields, e.g. [{"text":"...","author":"..."}]. Extra fields (e.g. "id") are
+# silently ignored. A random item is picked from the array on each refresh.
 # Output schema (JSON object):
-#   { "text": "...", "author": "...", "fetched_at": "RFC3339", "source": "zenquotes" | "local" }
+#   { "text": "...", "author": "...", "fetched_at": "RFC3339", "source": "custom" | "zenquotes" | "local" }
 do_refresh() {
     install -d -m 0755 "$CACHE_DIR"
     local payload="" tmp text author source
     tmp=$(mktemp)
-    if curl --silent --max-time 1.5 --fail \
-        -H 'Accept: application/json' \
-        'https://zenquotes.io/api/random' -o "$tmp" 2>/dev/null; then
-        # Response is [{"q":"...","a":"...","h":"<html>"}]; extract first stanza.
-        text=$(python3 -c "import sys,json; d=json.load(open('$tmp')); print(d[0].get('q','').strip())" 2>/dev/null || echo "")
-        author=$(python3 -c "import sys,json; d=json.load(open('$tmp')); print(d[0].get('a','').strip())" 2>/dev/null || echo "")
-        source=zenquotes
+
+    # --- 1. Custom URL (highest priority) ---
+    local custom_url
+    custom_url=$(read_custom_url)
+    if [ -n "$custom_url" ]; then
+        if curl --silent --max-time 5 --fail \
+            -H 'Accept: application/json' \
+            "$custom_url" -o "$tmp" 2>/dev/null; then
+            # Expect a JSON array; pick one random element atomically,
+            # then emit text and author on separate lines for read to split.
+            local picked
+            picked=$(python3 - "$tmp" <<'PY'
+import json, random, sys
+with open(sys.argv[1], encoding='utf-8') as f:
+    data = json.load(f)
+if isinstance(data, list) and data:
+    item = random.choice(data)
+    print(item.get('text','').strip())
+    print(item.get('author','').strip())
+PY
+            2>/dev/null || true)
+            text=$(echo "$picked" | sed -n '1p')
+            author=$(echo "$picked" | sed -n '2p')
+            [ -n "$text" ] && source=custom
+        fi
+        if [ -z "${text:-}" ]; then
+            echo "Warning: custom URL fetch failed, falling back to zenquotes.io." >&2
+        fi
+    fi
+    rm -f "$tmp"
+    tmp=$(mktemp)
+
+    # --- 2. zenquotes.io (fallback when no custom URL or custom fetch failed) ---
+    if [ -z "${text:-}" ]; then
+        if curl --silent --max-time 1.5 --fail \
+            -H 'Accept: application/json' \
+            'https://zenquotes.io/api/random' -o "$tmp" 2>/dev/null; then
+            # Response is [{"q":"...","a":"...","h":"<html>"}]; extract first stanza.
+            text=$(python3 - "$tmp" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as f:
+    data = json.load(f)
+print(data[0].get('q', '').strip())
+PY
+            2>/dev/null || echo "")
+            author=$(python3 - "$tmp" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as f:
+    data = json.load(f)
+print(data[0].get('a', '').strip())
+PY
+            2>/dev/null || echo "")
+            source=zenquotes
+        fi
     fi
     rm -f "$tmp"
     if [ -z "${text:-}" ] || [ -z "${author:-}" ]; then
@@ -186,15 +275,18 @@ do_refresh() {
         author="Socrates"
         source=builtin
     fi
-    payload=$(python3 -c "
-import json, datetime
+    payload=$(python3 -c '
+import datetime, json, sys
 print(json.dumps({
-    'text': '''$text''',
-    'author': '''$author''',
-    'fetched_at': datetime.datetime.utcnow().isoformat() + 'Z',
-    'source': '$source',
+    "text": sys.argv[1],
+    "author": sys.argv[2],
+    "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+    "source": sys.argv[3],
 }))
-" 2>/dev/null) || payload=$(printf '{"text":%q,"author":%q,"fetched_at":"unknown","source":"%s"}\n' "$text" "$author" "$source")
+' "$text" "$author" "$source" 2>/dev/null) || payload=$(printf '{"text":%s,"author":%s,"fetched_at":"unknown","source":%s}\n' \
+        "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$text")" \
+        "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$author")" \
+        "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$source")")
 
     # Atomic write so readers never see a half-written file.
     local tmp_out
@@ -218,8 +310,8 @@ cmd_render() {
         fi
     fi
     local text author
-    text=$(python3 -c "import json; d=json.load(open('$CACHE_FILE')); print(d.get('text',''))" 2>/dev/null || echo "")
-    author=$(python3 -c "import json; d=json.load(open('$CACHE_FILE')); print(d.get('author',''))" 2>/dev/null || echo "")
+    text=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("text", ""))' "$CACHE_FILE" 2>/dev/null || echo "")
+    author=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("author", ""))' "$CACHE_FILE" 2>/dev/null || echo "")
     [ -z "$text" ] && return 0
 
     if [ -r "$PREFIX_FILE" ]; then
@@ -438,6 +530,28 @@ cmd_set_refresh() {
     regenerate_timer_unit "$h"
 }
 
+cmd_set_url() {
+    require_root set-url "$@"
+    local url="${1:-}"
+    if [ -z "$url" ]; then
+        echo "Error: provide a URL, or run 'herald clear-url' to remove it." >&2
+        exit 1
+    fi
+    if [[ ! "$url" =~ ^https?:// ]]; then
+        echo "Error: URL must start with http:// or https://" >&2
+        exit 1
+    fi
+    write_conf_url "$url"
+    echo "Custom quote URL set: $url"
+    echo "Run 'sudo herald refresh' to fetch a quote from it now."
+}
+
+cmd_clear_url() {
+    require_root clear-url
+    write_conf_url ""
+    echo "Custom quote URL cleared. Will fall back to zenquotes.io."
+}
+
 cmd_status() {
     local h
     h=$(read_refresh_hours)
@@ -453,12 +567,19 @@ cmd_status() {
     echo "Cache:      $CACHE_FILE"
     if [ -r "$CACHE_FILE" ]; then
         local fetched_at source
-        fetched_at=$(python3 -c "import json; print(json.load(open('$CACHE_FILE')).get('fetched_at',''))" 2>/dev/null || echo "?")
-        source=$(python3 -c "import json; print(json.load(open('$CACHE_FILE')).get('source',''))" 2>/dev/null || echo "?")
+        fetched_at=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("fetched_at", ""))' "$CACHE_FILE" 2>/dev/null || echo "?")
+        source=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("source", ""))' "$CACHE_FILE" 2>/dev/null || echo "?")
         echo "  fetched:  $fetched_at"
         echo "  source:   $source"
     else
         echo "  (no cache yet, run: sudo herald refresh)"
+    fi
+    local custom_url
+    custom_url=$(read_custom_url)
+    if [ -n "$custom_url" ]; then
+        echo "Quote URL:  $custom_url (custom)"
+    else
+        echo "Quote URL:  https://zenquotes.io/api/random (default)"
     fi
     if [ -r "$PREFIX_FILE" ]; then
         echo "Prefix:     set ($PREFIX_FILE)"
@@ -482,6 +603,8 @@ case "$cmd" in
     set-prefix)        cmd_set_prefix "${1:-}" ;;
     clear-prefix)      cmd_set_prefix "" ;;
     set-refresh)       cmd_set_refresh "${1:-}" ;;
+    set-url)           cmd_set_url "${1:-}" ;;
+    clear-url)         cmd_clear_url ;;
     status)            cmd_status ;;
     render)            cmd_render ;;
     -h|--help|help)    usage ;;
